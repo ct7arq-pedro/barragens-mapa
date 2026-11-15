@@ -3,7 +3,7 @@ import json
 import os
 from ftplib import FTP
 
-API_TOKEN = os.getenv("BARRAGENS_API_TOKEN")
+API_TOKEN = os.getenv("BARRAGENS_API_TOKEN", "").strip()
 API_BASE = "https://barragens.pt/api/dams"
 
 DAMS = {

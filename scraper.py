@@ -1,24 +1,27 @@
 import requests
 import json
 import os
+import time
 from ftplib import FTP
 from collections import defaultdict
 
+# O .strip() remove espaços ou "enters" invisíveis que possam estar no Secret
 API_TOKEN = os.getenv("BARRAGENS_API_TOKEN", "").strip()
 API_BASE = "https://barragens.pt/api/dams"
 
 def obter_dados_nacionais():
+    # Disfarçar o Python de browser para o Cloudflare não bloquear
     headers = {
         "Authorization": f"Bearer {API_TOKEN}", 
         "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     print("A obter a lista de todas as estações...")
     try:
         resp = requests.get(API_BASE, headers=headers, timeout=30)
         if resp.status_code != 200:
-            print(f"Erro ao obter lista: HTTP {resp.status_code}")
+            print(f"Erro ao obter lista: HTTP {resp.status_code} - {resp.text[:100]}")
             return
             
         todas_estacoes = resp.json().get("data", [])
@@ -26,19 +29,21 @@ def obter_dados_nacionais():
         print(f"Erro de rede na lista: {e}")
         return
 
-    print(f"Encontradas {len(todas_estacoes)} estações. A obter dados (isto pode demorar alguns minutos)...")
+    print(f"Encontradas {len(todas_estacoes)} estações. A obter dados...")
     
     dados_por_bacia = defaultdict(list)
     
     for b in todas_estacoes:
         id_b = b["id"]
         nome = b["name"]
-        # Pega o nome da bacia. Se não tiver, coloca "Outras"
         bacia = b.get("basin_name") or "Outras"
+        
+        # PAUSA DE SEGURANÇA: Espera 0.3 segundos entre cada pedido para não bloquear a API
+        time.sleep(0.3)
         
         try:
             url_rt = f"{API_BASE}/{id_b}/realtime"
-            resp_rt = requests.get(url_rt, headers=headers, timeout=10)
+            resp_rt = requests.get(url_rt, headers=headers, timeout=15)
             
             historico = []
             if resp_rt.status_code == 200:
@@ -64,12 +69,15 @@ def obter_dados_nacionais():
         except Exception as e:
             print(f"❌ Erro em {nome}: {e}")
 
+    # Criar o ficheiro JavaScript
     with open("dados_nacional.js", "w", encoding="utf-8") as f:
         f.write(f"var dadosNacionais = {json.dumps(dados_por_bacia, ensure_ascii=False)};")
     print("Ficheiro dados_nacional.js gerado.")
     
+    # Enviar para o FTP
     ftp_host = os.getenv("FTP_HOST")
-    if ftp_host:
+    if ftp_host and len(dados_por_bacia) > 0:
+        print("A enviar para o qsl.net...")
         try:
             ftp = FTP(ftp_host)
             ftp.login(os.getenv("FTP_USER"), os.getenv("FTP_PASS"))
@@ -80,6 +88,8 @@ def obter_dados_nacionais():
             print("🚀 Upload para o qsl.net concluído!")
         except Exception as e:
             print(f"❌ Erro no FTP: {e}")
+    else:
+        print("⚠️ Sem dados ou credenciais FTP. Upload cancelado.")
 
 if __name__ == "__main__":
     obter_dados_nacionais()

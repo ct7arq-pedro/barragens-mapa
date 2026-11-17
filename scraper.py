@@ -3,86 +3,100 @@ import json
 import os
 import time
 from ftplib import FTP
-from collections import defaultdict
 
-# O .strip() remove espaços ou "enters" invisíveis que possam estar no Secret
 API_TOKEN = os.getenv("BARRAGENS_API_TOKEN", "").strip()
-API_BASE = "https://barragens.pt/api/dams"
+API_BASE = "https://barragens.pt/api"
 
-# As 3 bacias que queremos monitorizar
+# Nomes exatos das bacias que queremos
 BACIA_ALVO = ["Cávado/ribeiras Costeiras", "Ave", "Lima"]
 
-def obter_dados_nacionais():
-    # Disfarçar o Python de browser para o Cloudflare não bloquear
+def obter_dados():
     headers = {
         "Authorization": f"Bearer {API_TOKEN}", 
         "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
-    print("A obter a lista de todas as estações...")
+    print("1. A obter a lista de bacias...")
     try:
-        resp = requests.get(API_BASE, headers=headers, timeout=30)
-        if resp.status_code != 200:
-            print(f"Erro ao obter lista: HTTP {resp.status_code} - {resp.text[:100]}")
-            return
-            
-        todas_estacoes = resp.json().get("data", [])
+        resp = requests.get(f"{API_BASE}/basins", headers=headers, timeout=20)
+        resp.raise_for_status()
+        todas_bacias = resp.json().get("data", [])
     except Exception as e:
-        print(f"Erro de rede na lista: {e}")
+        print(f"Erro ao obter bacias: {e}")
         return
 
-    # FILTRO: Apenas as bacias do Cávado, Ave e Lima
-    estacoes_filtradas = [b for b in todas_estacoes if b.get("basin_name") in BACIA_ALVO]
-    
-    print(f"Encontradas {len(estacoes_filtradas)} estações nas bacias alvo. A obter dados...")
-    
-    dados_por_bacia = defaultdict(list)
-    
-    for b in estacoes_filtradas:
-        id_b = b["id"]
-        nome = b["name"]
-        bacia = b.get("basin_name") or "Outras"
-        
-        # PAUSA DE SEGURANÇA: Espera 0.3 segundos entre cada pedido para não bloquear a API
-        time.sleep(0.3)
-        
-        try:
-            url_rt = f"{API_BASE}/{id_b}/realtime"
-            resp_rt = requests.get(url_rt, headers=headers, timeout=15)
-            
-            historico = []
-            if resp_rt.status_code == 200:
-                dados_rt = resp_rt.json().get("data", [])
-                # Guardar as últimas 24 leituras para o gráfico
-                historico = dados_rt[-24:] if len(dados_rt) > 24 else dados_rt
-            
-            atual = historico[-1] if historico else {}
-            
-            dados_estacao = {
-                "id": id_b,
-                "nome": nome,
-                "lat": b["coordinates"]["lat"],
-                "lon": b["coordinates"]["lon"],
-                "rio": b.get("river", ""),
-                "atual": atual,
-                "historico": historico
-            }
-            
-            dados_por_bacia[bacia].append(dados_estacao)
-            print(f"✅ {nome} ({bacia})")
-            
-        except Exception as e:
-            print(f"❌ Erro em {nome}: {e}")
+    dados_barragens = {}
+    resumos_bacias = {}
 
-    # Criar o ficheiro JavaScript
+    for bacia in todas_bacias:
+        nome_bacia = bacia.get("name")
+        if nome_bacia not in BACIA_ALVO:
+            continue
+            
+        id_bacia = bacia.get("id")
+        print(f"\n2. A processar a bacia: {nome_bacia} (ID: {id_bacia})")
+        
+        # Obter Resumo da Bacia (Volume, Capacidade, %)
+        try:
+            resp_detalhe = requests.get(f"{API_BASE}/basins/{id_bacia}", headers=headers, timeout=15)
+            if resp_detalhe.status_code == 200:
+                resumos_bacias[nome_bacia] = resp_detalhe.json().get("data", {})
+                print(f"   ✓ Resumo da bacia obtido.")
+        except Exception as e:
+            print(f"   ❌ Erro no resumo da bacia: {e}")
+
+        time.sleep(0.5) # Pausa de segurança
+
+        # Obter lista de barragens desta bacia
+        try:
+            resp_dams = requests.get(f"{API_BASE}/basins/{id_bacia}/dams", headers=headers, timeout=20)
+            resp_dams.raise_for_status()
+            barragens = resp_dams.json().get("data", [])
+            print(f"   ✓ Encontradas {len(barragens)} barragens.")
+        except Exception as e:
+            print(f"   ❌ Erro ao obter barragens: {e}")
+            continue
+
+        estacoes = []
+        for dam in barragens:
+            id_dam = dam.get("id")
+            time.sleep(0.4) # Pausa entre cada barragem
+            
+            try:
+                # O endpoint realtime aceita 'limit' para trazer só as últimas X horas
+                resp_rt = requests.get(f"{API_BASE}/dams/{id_dam}/realtime?limit=24", headers=headers, timeout=15)
+                if resp_rt.status_code == 200:
+                    rt_data = resp_rt.json().get("data", [])
+                    atual = rt_data[-1] if rt_data else {}
+                    
+                    estacoes.append({
+                        "id": id_dam,
+                        "nome": dam.get("name"),
+                        "lat": dam.get("coordinates", {}).get("lat", 0),
+                        "lon": dam.get("coordinates", {}).get("lon", 0),
+                        "rio": dam.get("river", ""),
+                        "atual": atual,
+                        "historico": rt_data
+                    })
+                    print(f"      -> ✅ {dam.get('name')}")
+                else:
+                    print(f"      -> ⚠️ Sem dados em tempo real para {dam.get('name')}")
+            except Exception as e:
+                print(f"      -> ❌ Erro em {dam.get('name')}: {e}")
+        
+        dados_barragens[nome_bacia] = estacoes
+
+    # Criar o ficheiro JavaScript final
     with open("dados_nacional.js", "w", encoding="utf-8") as f:
-        f.write(f"var dadosNacionais = {json.dumps(dados_por_bacia, ensure_ascii=False)};")
-    print("Ficheiro dados_nacional.js gerado.")
+        f.write(f"var dadosNacionais = {json.dumps(dados_barragens, ensure_ascii=False)};\n")
+        f.write(f"var resumosBacias = {json.dumps(resumos_bacias, ensure_ascii=False)};")
+        
+    print("\n✅ Ficheiro dados_nacional.js gerado com sucesso.")
     
     # Enviar para o FTP
     ftp_host = os.getenv("FTP_HOST")
-    if ftp_host and len(dados_por_bacia) > 0:
+    if ftp_host and len(dados_barragens) > 0:
         print("A enviar para o qsl.net...")
         try:
             ftp = FTP(ftp_host)
@@ -94,8 +108,6 @@ def obter_dados_nacionais():
             print("🚀 Upload para o qsl.net concluído!")
         except Exception as e:
             print(f"❌ Erro no FTP: {e}")
-    else:
-        print("⚠️ Sem dados ou credenciais FTP. Upload cancelado.")
 
 if __name__ == "__main__":
-    obter_dados_nacionais()
+    obter_dados()

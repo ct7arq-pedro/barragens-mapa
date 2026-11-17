@@ -2,7 +2,14 @@ import requests
 import json
 import os
 import time
+import locale
 from ftplib import FTP
+
+# Força o padrão americano para números (ponto decimal)
+try:
+    locale.setlocale(locale.LC_NUMERIC, 'C')
+except locale.Error:
+    pass
 
 API_TOKEN = os.getenv("BARRAGENS_API_TOKEN", "").strip()
 API_BASE = "https://barragens.pt/api"
@@ -104,9 +111,13 @@ def obter_dados():
         dados_barragens[nome_bacia] = estacoes
 
     # 4. Criar o ficheiro JavaScript final
-    with open("dados_nacional.js", "w", encoding="utf-8") as f:
-        f.write(f"var dadosNacionais = {json.dumps(dados_barragens, ensure_ascii=False)};\n")
-        f.write(f"var resumosBacias = {json.dumps(resumos_bacias, ensure_ascii=False)};")
+    # Usamos separators para evitar espaços desnecessários e allow_nan=False para garantir JS válido
+    with open("dados_nacional.js", "w", encoding="utf-8", newline='\n') as f:
+        json_nacional = json.dumps(dados_barragens, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+        json_resumos = json.dumps(resumos_bacias, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+        
+        f.write(f"var dadosNacionais = {json_nacional};\n")
+        f.write(f"var resumosBacias = {json_resumos};\n")
         
     print("\n✅ Ficheiro dados_nacional.js gerado com sucesso.")
     
@@ -118,6 +129,10 @@ def obter_dados():
             ftp = FTP(ftp_host)
             ftp.login(os.getenv("FTP_USER"), os.getenv("FTP_PASS"))
             ftp.cwd('/apoio_operador/') 
+            
+            # FORÇAR MODO BINÁRIO (Evita que o servidor corrompa o ficheiro)
+            ftp.voidcmd("TYPE I") 
+            
             with open("dados_nacional.js", "rb") as f:
                 ftp.storbinary("STOR dados_nacional.js", f)
             ftp.quit()

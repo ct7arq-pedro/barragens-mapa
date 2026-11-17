@@ -17,6 +17,7 @@ def obter_dados():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
+    # 1. Obter a lista de bacias (para o resumo)
     print("1. A obter a lista de bacias...")
     try:
         resp = requests.get(f"{API_BASE}/basins", headers=headers, timeout=20)
@@ -26,16 +27,28 @@ def obter_dados():
         print(f"Erro ao obter bacias: {e}")
         return
 
+    # 2. Obter a lista GLOBAL de barragens (AQUI ESTÃO AS COORDENADAS!)
+    print("\n2. A obter a lista global de barragens (com coordenadas)...")
+    try:
+        resp_dams = requests.get(f"{API_BASE}/dams", headers=headers, timeout=20)
+        resp_dams.raise_for_status()
+        todas_barragens_globais = resp_dams.json().get("data", [])
+        print(f"   ✓ {len(todas_barragens_globais)} barragens encontradas no país.")
+    except Exception as e:
+        print(f"   ❌ Erro ao obter lista global de barragens: {e}")
+        return
+
     dados_barragens = {}
     resumos_bacias = {}
 
+    # 3. Filtrar as bacias alvo e cruzar os dados
     for bacia in todas_bacias:
         nome_bacia = bacia.get("name")
         if nome_bacia not in BACIA_ALVO:
             continue
             
-        id_bacia = bacia.get("id")
-        print(f"\n2. A processar a bacia: {nome_bacia} (ID: {id_bacia})")
+        id_bacia = str(bacia.get("id"))
+        print(f"\n3. A processar a bacia: {nome_bacia} (ID: {id_bacia})")
         
         # Obter Resumo da Bacia (Volume, Capacidade, %)
         try:
@@ -46,21 +59,24 @@ def obter_dados():
         except Exception as e:
             print(f"   ❌ Erro no resumo da bacia: {e}")
 
-        time.sleep(0.5) # Pausa de segurança
+        time.sleep(0.5)
 
-        # Obter lista de barragens desta bacia
-        try:
-            resp_dams = requests.get(f"{API_BASE}/basins/{id_bacia}/dams", headers=headers, timeout=20)
-            resp_dams.raise_for_status()
-            barragens = resp_dams.json().get("data", [])
-            print(f"   ✓ Encontradas {len(barragens)} barragens.")
-        except Exception as e:
-            print(f"   ❌ Erro ao obter barragens: {e}")
-            continue
+        # Filtrar a lista global pelas barragens que pertencem a esta bacia
+        barragens_da_bacia = [d for d in todas_barragens_globais if str(d.get("basin_id")) == id_bacia]
+        print(f"   ✓ Encontradas {len(barragens_da_bacia)} barragens nesta bacia.")
 
         estacoes = []
-        for dam in barragens:
+        for dam in barragens_da_bacia:
             id_dam = dam.get("id")
+            nome_dam = dam.get("name")
+            
+            # Extrair coordenadas do objeto global (que sabemos que as tem)
+            coords = dam.get("coordinates")
+            lat, lon = 0, 0
+            if coords and isinstance(coords, dict):
+                lat = coords.get("lat", 0)
+                lon = coords.get("lon", 0)
+            
             time.sleep(0.4) # Pausa entre cada barragem
             
             try:
@@ -72,29 +88,29 @@ def obter_dados():
                     
                     estacoes.append({
                         "id": id_dam,
-                        "nome": dam.get("name"),
-                        "lat": dam.get("coordinates", {}).get("lat", 0),
-                        "lon": dam.get("coordinates", {}).get("lon", 0),
+                        "nome": nome_dam,
+                        "lat": lat,
+                        "lon": lon,
                         "rio": dam.get("river", ""),
                         "atual": atual,
                         "historico": rt_data
                     })
-                    print(f"      -> ✅ {dam.get('name')}")
+                    print(f"      -> ✅ {nome_dam} (lat: {lat}, lon: {lon})")
                 else:
-                    print(f"      -> ⚠️ Sem dados em tempo real para {dam.get('name')}")
+                    print(f"      -> ⚠️ Sem dados em tempo real para {nome_dam}")
             except Exception as e:
-                print(f"      -> ❌ Erro em {dam.get('name')}: {e}")
+                print(f"      -> ❌ Erro em {nome_dam}: {e}")
         
         dados_barragens[nome_bacia] = estacoes
 
-    # Criar o ficheiro JavaScript final
+    # 4. Criar o ficheiro JavaScript final
     with open("dados_nacional.js", "w", encoding="utf-8") as f:
         f.write(f"var dadosNacionais = {json.dumps(dados_barragens, ensure_ascii=False)};\n")
         f.write(f"var resumosBacias = {json.dumps(resumos_bacias, ensure_ascii=False)};")
         
     print("\n✅ Ficheiro dados_nacional.js gerado com sucesso.")
     
-    # Enviar para o FTP
+    # 5. Enviar para o FTP
     ftp_host = os.getenv("FTP_HOST")
     if ftp_host and len(dados_barragens) > 0:
         print("A enviar para o qsl.net...")
@@ -108,6 +124,7 @@ def obter_dados():
             print("🚀 Upload para o qsl.net concluído!")
         except Exception as e:
             print(f"❌ Erro no FTP: {e}")
+            raise e # Faz o GitHub Actions falhar e ficar vermelho (evita falhas silenciosas)
 
 if __name__ == "__main__":
     obter_dados()

@@ -2,7 +2,7 @@ name: Atualizar Dados do Mapa
 
 on:
   schedule:
-    - cron: '0 * * * *' # Corre a cada hora (no minuto 0)
+    - cron: '*/15 * * * *'  # A cada 15 minutos
   workflow_dispatch: # Permite correr manualmente
 
 jobs:
